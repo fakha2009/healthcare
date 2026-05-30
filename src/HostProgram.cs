@@ -1,4 +1,5 @@
 using System;
+using System.Drawing;
 using System.IO;
 using System.Reflection;
 using System.Windows.Forms;
@@ -45,10 +46,28 @@ namespace HealthcareSanatoriumInterface
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            using (Form form = CreateMainForm(assemblyPath, dbPath))
+
+            // Show splash immediately — before the slow DLL load + form construction
+            Form splash = CreateHostSplash();
+            splash.Show();
+            Application.DoEvents();
+
+            Form form = null;
+            try
             {
-                Application.Run(form);
+                form = CreateMainForm(assemblyPath, dbPath);
             }
+            catch
+            {
+                splash.Close();
+                splash.Dispose();
+                throw;
+            }
+
+            // Close splash as soon as the main form finishes loading
+            form.Load += delegate { splash.Close(); splash.Dispose(); };
+            Application.Run(form);
+            form.Dispose();
         }
 
         private static int RunSelfTest(string assemblyPath, string dbPath)
@@ -89,6 +108,61 @@ namespace HealthcareSanatoriumInterface
         private static Form CreateMainForm(string assemblyPath, string dbPath)
         {
             return (Form)InvokeMethod(assemblyPath, "PluginBootstrap", "CreateMainForm", dbPath);
+        }
+
+        // Lightweight splash that needs NO DLL — shows before Assembly.LoadFrom
+        private static Form CreateHostSplash()
+        {
+            Form f = new Form();
+            f.FormBorderStyle = FormBorderStyle.None;
+            f.StartPosition = FormStartPosition.CenterScreen;
+            f.Size = new System.Drawing.Size(420, 160);
+            f.BackColor = System.Drawing.Color.FromArgb(16, 22, 36);
+            f.ShowInTaskbar = false;
+            f.TopMost = true;
+
+            Label title = new Label();
+            title.Text = "Система здравоохранения";
+            title.ForeColor = System.Drawing.Color.FromArgb(220, 232, 250);
+            title.Font = new System.Drawing.Font("Segoe UI", 16f, System.Drawing.FontStyle.Bold);
+            title.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            title.Dock = DockStyle.Top;
+            title.Height = 70;
+
+            Label status = new Label();
+            status.Text = "Запуск приложения...";
+            status.ForeColor = System.Drawing.Color.FromArgb(90, 120, 160);
+            status.Font = new System.Drawing.Font("Segoe UI", 9f);
+            status.TextAlign = System.Drawing.ContentAlignment.MiddleCenter;
+            status.Dock = DockStyle.Top;
+            status.Height = 28;
+
+            Panel bar = new Panel();
+            bar.Dock = DockStyle.Top;
+            bar.Height = 4;
+            bar.BackColor = System.Drawing.Color.FromArgb(35, 52, 78);
+
+            Panel fill = new Panel();
+            fill.BackColor = System.Drawing.Color.FromArgb(74, 144, 255);
+            fill.Width = 0;
+            fill.Height = 4;
+            bar.Controls.Add(fill);
+
+            // Animate the progress bar
+            System.Windows.Forms.Timer t = new System.Windows.Forms.Timer();
+            t.Interval = 30;
+            t.Tick += delegate
+            {
+                if (fill.Width < bar.Width)
+                    fill.Width = Math.Min(fill.Width + 6, bar.Width);
+            };
+            f.Shown += delegate { t.Start(); };
+            f.FormClosed += delegate { t.Stop(); t.Dispose(); };
+
+            f.Controls.Add(bar);
+            f.Controls.Add(status);
+            f.Controls.Add(title);
+            return f;
         }
 
         private static string ResolveDatabasePath(string baseDir)

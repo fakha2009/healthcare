@@ -62,7 +62,13 @@ namespace HealthcareSanatoriumInterface
                     Environment.Exit(1);
                 }
             }
-            Application.Run(new MainForm(dbPath));
+            SplashForm splash = new SplashForm();
+            splash.Show();
+            Application.DoEvents();
+            splash.SetStatus("Загрузка интерфейса...");
+            MainForm mainForm = new MainForm(dbPath);
+            mainForm.Load += delegate { splash.Close(); };
+            Application.Run(mainForm);
         }
     }
 
@@ -172,18 +178,33 @@ namespace HealthcareSanatoriumInterface
             catch { }
         }
 
+        // Shared form background — must match GlassForm.FormBgColor()
+        public static Color FormBackground { get { return Dark ? Color.FromArgb(18, 24, 38) : Color.FromArgb(220, 230, 248); } }
+
         public static void ApplyTo(Control root)
         {
             if (root == null) return;
             root.Font = BaseFont;
-            if (!(root is GlassPanel)) root.BackColor = root is Form ? (Dark ? Color.FromArgb(13, 18, 29) : Color.FromArgb(232, 239, 249)) : root.BackColor;
+
+            if (root is GlassPanel)
+            {
+                ((GlassPanel)root).InvalidatePanelCache();
+            }
+            else if (root is Form)
+            {
+                root.BackColor = FormBackground;
+            }
+
             foreach (Control control in root.Controls)
             {
-                if (control is Button)
+                if (control is GlassButton)
+                {
+                    control.Invalidate(); // GlassButton reads Theme.Dark in OnPaint
+                }
+                else if (control is Button)
                 {
                     Button button = (Button)control;
-                    GlassButton glass = button as GlassButton;
-                    StyleButton(button, glass != null ? glass.Primary : button.FlatAppearance.BorderSize == 0);
+                    StyleButton(button, button.FlatAppearance.BorderSize == 0);
                 }
                 else if (control is DataGridView)
                 {
@@ -328,6 +349,9 @@ public static class UiPerformance
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
             grid.DataSource = table;
             if (grid.Columns.Count > 0) grid.Columns[0].Visible = false;
+            // Enable sorting by column header click
+            foreach (DataGridViewColumn col in grid.Columns)
+                if (col.Visible) col.SortMode = DataGridViewColumnSortMode.Automatic;
             grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             grid.ClearSelection();
         }
@@ -610,81 +634,29 @@ public sealed class DbContext
 public class GlassForm : Form
 {
     protected readonly DbContext Db;
-    private Bitmap backgroundCache;
-    private Size backgroundCacheSize;
-    private bool backgroundCacheDark;
 
     protected GlassForm(DbContext db)
     {
         Db = db;
         Font = Theme.BaseFont;
         Icon = TryLoadAppIcon();
-        BackColor = Theme.Dark ? Color.FromArgb(13, 18, 29) : Color.FromArgb(232, 239, 249);
+        BackColor = FormBgColor();
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         DoubleBuffered = true;
-        ResizeRedraw = true;
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
-        UpdateStyles();
         AutoScroll = true;
-        Padding = new Padding(24);
+        Padding = new Padding(16);
         MinimumSize = new Size(1024, 680);
         MaximizeBox = true;
         Shown += delegate { ApplyTheme(); };
     }
 
-    protected override void OnPaintBackground(PaintEventArgs e)
+    private static Color FormBgColor()
     {
-        if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
-
-        if (backgroundCache == null || backgroundCacheSize != ClientSize || backgroundCacheDark != Theme.Dark)
-        {
-            ResetBackgroundCache();
-            backgroundCache = new Bitmap(ClientSize.Width, ClientSize.Height);
-            backgroundCacheSize = ClientSize;
-            backgroundCacheDark = Theme.Dark;
-            using (Graphics graphics = Graphics.FromImage(backgroundCache))
-            {
-                PaintCachedBackground(graphics);
-            }
-        }
-
-        e.Graphics.DrawImageUnscaled(backgroundCache, Point.Empty);
+        return Theme.FormBackground;
     }
 
-    protected override void OnClosed(EventArgs e)
-    {
-        ResetBackgroundCache();
-        base.OnClosed(e);
-    }
-
-    private void ResetBackgroundCache()
-    {
-        if (backgroundCache != null)
-        {
-            backgroundCache.Dispose();
-            backgroundCache = null;
-        }
-        backgroundCacheSize = Size.Empty;
-    }
-
-    private void PaintCachedBackground(Graphics graphics)
-    {
-        Rectangle bounds = new Rectangle(Point.Empty, ClientSize);
-        Color from = Theme.Dark ? Color.FromArgb(11, 16, 26) : Color.FromArgb(235, 242, 252);
-        Color to = Theme.Dark ? Color.FromArgb(25, 34, 52) : Color.FromArgb(250, 252, 255);
-        using (LinearGradientBrush brush = new LinearGradientBrush(bounds, from, to, 45f))
-        {
-            graphics.FillRectangle(brush, bounds);
-        }
-
-        using (SolidBrush blue = new SolidBrush(Theme.Dark ? Color.FromArgb(58, 74, 144, 255) : Color.FromArgb(42, 0, 122, 255)))
-        using (SolidBrush green = new SolidBrush(Theme.Dark ? Color.FromArgb(42, 61, 220, 132) : Color.FromArgb(32, 52, 199, 89)))
-        {
-            graphics.FillEllipse(blue, ClientSize.Width - 320, -90, 420, 260);
-            graphics.FillEllipse(green, -120, ClientSize.Height - 220, 340, 260);
-        }
-    }
+    // No custom OnPaintBackground — WinForms fills with BackColor instantly
 
     protected static Icon TryLoadAppIcon()
     {
@@ -857,15 +829,32 @@ public class GlassForm : Form
         try
         {
             SuspendLayout();
-            BackColor = Theme.Dark ? Color.FromArgb(13, 18, 29) : Color.FromArgb(232, 239, 249);
-            ResetBackgroundCache();
+            BackColor = FormBgColor();
+            RefreshGlassPanels(this);
             Theme.ApplyTo(this);
             UiPerformance.Optimize(this);
         }
         finally
         {
-            ResumeLayout(false);
-            Invalidate(false);
+            ResumeLayout(true);
+            Refresh();
+        }
+    }
+
+    private static void RefreshGlassPanels(Control root)
+    {
+        foreach (Control c in root.Controls)
+        {
+            GlassPanel gp = c as GlassPanel;
+            if (gp != null)
+                gp.InvalidatePanelCache();
+
+            // Update embedded (non-toplevel) form background
+            Form f = c as Form;
+            if (f != null && !f.TopLevel)
+                f.BackColor = Theme.Dark ? Color.FromArgb(18, 24, 38) : Color.FromArgb(220, 230, 248);
+
+            RefreshGlassPanels(c); // always recurse — catches nested panels + embedded forms
         }
     }
 }
@@ -876,64 +865,42 @@ public class GlassForm : Form
         public GlassPanel()
         {
             DoubleBuffered = true;
-            Padding = new Padding(22);
-            BackColor = Color.Transparent;
+            Padding = new Padding(18);
+            UpdatePanelColor();
+        }
+
+        public void InvalidatePanelCache()
+        {
+            UpdatePanelColor();
+            Invalidate();
+        }
+
+        private void UpdatePanelColor()
+        {
+            BackColor = Theme.Dark ? Color.FromArgb(24, 34, 54) : Color.White;
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Rectangle shadowRect = new Rectangle(10, 14, Width - 22, Height - 24);
-            Rectangle rect = new Rectangle(6, 4, Width - 13, Height - 12);
-            using (GraphicsPath shadow = Rounded(shadowRect, 24))
-            using (SolidBrush shadowBrush = new SolidBrush(Theme.Dark ? Color.FromArgb(90, 0, 0, 0) : Color.FromArgb(32, 78, 108, 150)))
-            {
-                e.Graphics.FillPath(shadowBrush, shadow);
-            }
-            using (GraphicsPath path = Rounded(rect, 22))
-            using (LinearGradientBrush fill = new LinearGradientBrush(rect, Theme.Dark ? Color.FromArgb(215, 30, 40, 62) : Color.FromArgb(230, 255, 255, 255), Theme.Dark ? Color.FromArgb(150, 18, 27, 45) : Color.FromArgb(180, 244, 248, 255), 90f))
-            using (Pen border = new Pen(Theme.Dark ? Color.FromArgb(90, 120, 150, 190) : Color.FromArgb(170, 255, 255, 255), 1f))
-            {
-                e.Graphics.FillPath(fill, path);
-                using (LinearGradientBrush sheen = new LinearGradientBrush(new Rectangle(rect.X, rect.Y, rect.Width, Math.Max(24, rect.Height / 3)), Theme.Dark ? Color.FromArgb(42, 255, 255, 255) : Color.FromArgb(150, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), 90f))
-                {
-                    e.Graphics.FillPath(sheen, path);
-                }
-                using (Pen inner = new Pen(Theme.Dark ? Color.FromArgb(55, 255, 255, 255) : Color.FromArgb(120, 255, 255, 255), 1f))
-                {
-                    Rectangle innerRect = new Rectangle(rect.X + 1, rect.Y + 1, rect.Width - 2, rect.Height - 2);
-                    using (GraphicsPath innerPath = Rounded(innerRect, 20))
-                    {
-                        e.Graphics.DrawPath(inner, innerPath);
-                    }
-                }
-                e.Graphics.DrawPath(border, path);
-            }
-        }
-
-        private static GraphicsPath Rounded(Rectangle rectangle, int radius)
-        {
-            int diameter = radius * 2;
-            GraphicsPath path = new GraphicsPath();
-            path.AddArc(rectangle.X, rectangle.Y, diameter, diameter, 180, 90);
-            path.AddArc(rectangle.Right - diameter, rectangle.Y, diameter, diameter, 270, 90);
-            path.AddArc(rectangle.Right - diameter, rectangle.Bottom - diameter, diameter, diameter, 0, 90);
-            path.AddArc(rectangle.X, rectangle.Bottom - diameter, diameter, diameter, 90, 90);
-            path.CloseFigure();
-            return path;
+            // Simple 1px border — instant, no GDI+ path allocation
+            Color borderColor = Theme.Dark ? Color.FromArgb(44, 60, 90) : Color.FromArgb(208, 218, 235);
+            using (Pen pen = new Pen(borderColor, 1f))
+                e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+            // Subtle bottom shadow line
+            using (Pen shadow = new Pen(Theme.Dark ? Color.FromArgb(10, 0, 0, 0) : Color.FromArgb(18, 100, 130, 180), 2f))
+                e.Graphics.DrawLine(shadow, 3, Height - 1, Width - 3, Height - 1);
         }
     }
 
     internal sealed class GlassButton : Button
     {
-        private bool hot;
-        private bool pressed;
+        private bool _hot;
+        private bool _pressed;
 
         public GlassButton()
         {
-            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
-            BackColor = Color.Transparent;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
             FlatStyle = FlatStyle.Flat;
             FlatAppearance.BorderSize = 0;
         }
@@ -941,149 +908,79 @@ public class GlassForm : Form
         public bool Primary { get; set; }
         public bool Large { get; set; }
 
-        protected override void OnMouseEnter(EventArgs e)
-        {
-            hot = true;
-            Invalidate();
-            base.OnMouseEnter(e);
-        }
-
-        protected override void OnMouseLeave(EventArgs e)
-        {
-            hot = false;
-            pressed = false;
-            Invalidate();
-            base.OnMouseLeave(e);
-        }
-
-        protected override void OnMouseDown(MouseEventArgs mevent)
-        {
-            pressed = true;
-            Invalidate();
-            base.OnMouseDown(mevent);
-        }
-
-        protected override void OnMouseUp(MouseEventArgs mevent)
-        {
-            pressed = false;
-            Invalidate();
-            base.OnMouseUp(mevent);
-        }
+        protected override void OnMouseEnter(EventArgs e) { _hot = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { _hot = false; _pressed = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { _pressed = true; Invalidate(); base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { _pressed = false; Invalidate(); base.OnMouseUp(e); }
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Color clearColor = Parent == null || Parent.BackColor.A < 255 ? (Theme.Dark ? Color.FromArgb(13, 18, 29) : Color.FromArgb(232, 239, 249)) : Parent.BackColor;
-            e.Graphics.Clear(clearColor);
-            Rectangle rect = new Rectangle(1, 1, Width - 3, Height - 3);
-            int radius = Math.Max(10, Math.Min(16, Height / 3));
-            if (pressed) rect.Offset(0, 1);
+            Rectangle r = ClientRectangle;
+            Color bg, fg, borderColor;
 
-            Color top;
-            Color bottom;
-            Color border;
-            Color text;
-            Color shineTop;
             if (Primary)
             {
-                top = hot ? Color.FromArgb(242, 39, 137, 248) : Color.FromArgb(235, 18, 122, 234);
-                bottom = hot ? Color.FromArgb(235, 6, 102, 214) : Color.FromArgb(224, 0, 91, 198);
-                border = Color.FromArgb(150, 115, 179, 250);
-                text = Color.White;
-                shineTop = Color.FromArgb(58, 255, 255, 255);
+                bg = _pressed ? Color.FromArgb(29, 78, 216)
+                   : _hot     ? Color.FromArgb(37, 99, 235)
+                              : Color.FromArgb(59, 130, 246);
+                fg = Color.White;
+                borderColor = Color.Transparent;
             }
-         else if (Theme.Dark)
+            else if (Theme.Dark)
             {
-                top = hot ? Color.FromArgb(230, 50, 65, 90) : Color.FromArgb(210, 40, 55, 80);
-                bottom = hot ? Color.FromArgb(195, 35, 48, 70) : Color.FromArgb(175, 28, 38, 60);
-                border = Color.FromArgb(128, 110, 130, 160);
-                text = Theme.Ink;
-                shineTop = Color.FromArgb(42, 255, 255, 255);
+                bg = _pressed ? Color.FromArgb(20, 30, 50)
+                   : _hot     ? Color.FromArgb(38, 52, 80)
+                              : Color.FromArgb(30, 42, 65);
+                fg = Theme.Ink;
+                borderColor = Color.FromArgb(52, 70, 105);
             }
             else
             {
-                top = hot ? Color.FromArgb(248, 250, 255, 255) : Color.FromArgb(242, 245, 252, 255);
-                bottom = hot ? Color.FromArgb(235, 242, 250, 255) : Color.FromArgb(228, 238, 248, 255);
-                border = Color.FromArgb(195, 205, 220, 235);
-                text = Theme.Ink;
-                shineTop = Color.FromArgb(90, 255, 255, 255);
+                bg = _pressed ? Color.FromArgb(219, 228, 242)
+                   : _hot     ? Color.FromArgb(237, 243, 252)
+                              : Color.FromArgb(248, 250, 254);
+                fg = Theme.Ink;
+                borderColor = Color.FromArgb(200, 212, 230);
             }
 
-            Rectangle shadowRect = new Rectangle(rect.X, rect.Y + 2, rect.Width, rect.Height);
-            using (GraphicsPath shadowPath = Rounded(shadowRect, radius))
-            using (SolidBrush shadow = new SolidBrush(Theme.Dark ? Color.FromArgb(36, 0, 0, 0) : Color.FromArgb(14, 80, 104, 145)))
-            {
-                e.Graphics.FillPath(shadow, shadowPath);
-            }
+            using (SolidBrush b = new SolidBrush(bg))
+                e.Graphics.FillRectangle(b, r);
 
-            using (GraphicsPath path = Rounded(rect, radius))
-            using (LinearGradientBrush fill = new LinearGradientBrush(rect, top, bottom, 90f))
-            using (Pen pen = new Pen(border, 1f))
-            {
-                e.Graphics.FillPath(fill, path);
-                Rectangle shineRect = new Rectangle(rect.X + 2, rect.Y + 2, rect.Width - 4, Math.Max(8, rect.Height / 3));
-                using (GraphicsPath shinePath = Rounded(shineRect, Math.Max(8, radius - 3)))
-                using (LinearGradientBrush shine = new LinearGradientBrush(shineRect, shineTop, Color.FromArgb(0, 255, 255, 255), 90f))
-                {
-                    e.Graphics.FillPath(shine, shinePath);
-                }
-                using (Pen inner = new Pen(Theme.Dark ? Color.FromArgb(36, 255, 255, 255) : Color.FromArgb(92, 255, 255, 255), 1f))
-                {
-                    Rectangle innerRect = new Rectangle(rect.X + 1, rect.Y + 1, rect.Width - 2, rect.Height - 2);
-                    using (GraphicsPath innerPath = Rounded(innerRect, Math.Max(8, radius - 1)))
-                    {
-                        e.Graphics.DrawPath(inner, innerPath);
-                    }
-                }
-                e.Graphics.DrawPath(pen, path);
-            }
+            if (borderColor != Color.Transparent)
+                using (Pen p = new Pen(borderColor, 1f))
+                    e.Graphics.DrawRectangle(p, 0, 0, r.Width - 1, r.Height - 1);
 
-            DrawCaption(e.Graphics, rect, text);
+            DrawCaption(e.Graphics, r, fg);
         }
 
-        private void DrawCaption(Graphics g, Rectangle rect, Color textColor)
+        private void DrawCaption(Graphics g, Rectangle r, Color fg)
         {
             string[] lines = Text.Replace("\r", "").Split('\n');
-            using (StringFormat format = new StringFormat())
+            using (StringFormat sf = new StringFormat())
             {
-                format.Trimming = StringTrimming.EllipsisCharacter;
-                format.Alignment = TextAlign == ContentAlignment.MiddleLeft ? StringAlignment.Near : StringAlignment.Center;
-                format.LineAlignment = StringAlignment.Center;
-                int leftPadding = Large ? 18 : 9;
-                RectangleF textRect = new RectangleF(rect.X + leftPadding, rect.Y + 2, rect.Width - (leftPadding * 2), rect.Height - 4);
+                sf.Trimming = StringTrimming.EllipsisCharacter;
+                sf.Alignment = TextAlign == ContentAlignment.MiddleLeft ? StringAlignment.Near : StringAlignment.Center;
+                sf.LineAlignment = StringAlignment.Center;
+                int pad = Large ? 18 : 10;
+                RectangleF tr = new RectangleF(r.X + pad, r.Y + 2, r.Width - pad * 2, r.Height - 4);
 
                 if (lines.Length > 1)
                 {
-                    using (SolidBrush titleBrush = new SolidBrush(textColor))
-                    using (SolidBrush subBrush = new SolidBrush(Primary ? Color.FromArgb(225, 255, 255, 255) : Theme.Muted))
+                    Color subColor = Primary ? Color.FromArgb(200, 220, 255) : Theme.Muted;
+                    float y = r.Y + (r.Height - 40) / 2f;
+                    using (SolidBrush tb = new SolidBrush(fg))
+                    using (SolidBrush sb = new SolidBrush(subColor))
                     {
-                        float y = rect.Y + (rect.Height - 42) / 2f;
-                        RectangleF titleRect = new RectangleF(textRect.X, y, textRect.Width, 22);
-                        RectangleF subRect = new RectangleF(textRect.X, y + 24, textRect.Width, 18);
-                        g.DrawString(lines[0], Theme.ButtonTitleFont, titleBrush, titleRect, format);
-                        g.DrawString(lines[1], Theme.ButtonSubFont, subBrush, subRect, format);
+                        g.DrawString(lines[0], Theme.ButtonTitleFont, tb, new RectangleF(tr.X, y, tr.Width, 22), sf);
+                        g.DrawString(lines[1], Theme.ButtonSubFont, sb, new RectangleF(tr.X, y + 23, tr.Width, 17), sf);
                     }
                 }
                 else
                 {
-                    using (SolidBrush brush = new SolidBrush(textColor))
-                    {
-                        g.DrawString(Text, Theme.ButtonCaptionFont, brush, textRect, format);
-                    }
+                    using (SolidBrush tb = new SolidBrush(fg))
+                        g.DrawString(Text, Theme.ButtonCaptionFont, tb, tr, sf);
                 }
             }
-        }
-
-        private static GraphicsPath Rounded(Rectangle rectangle, int radius)
-        {
-            int diameter = radius * 2;
-            GraphicsPath path = new GraphicsPath();
-            path.AddArc(rectangle.X, rectangle.Y, diameter, diameter, 180, 90);
-            path.AddArc(rectangle.Right - diameter, rectangle.Y, diameter, diameter, 270, 90);
-            path.AddArc(rectangle.Right - diameter, rectangle.Bottom - diameter, diameter, diameter, 0, 90);
-            path.AddArc(rectangle.X, rectangle.Bottom - diameter, diameter, diameter, 90, 90);
-            path.CloseFigure();
-            return path;
         }
     }
 
@@ -1349,13 +1246,25 @@ internal sealed class MainForm : GlassForm
 
     private void RefreshStats()
     {
-        Guard(delegate
+        if (!Db.Exists()) return;
+        stats.Text = "Загрузка...";
+        System.ComponentModel.BackgroundWorker worker = new System.ComponentModel.BackgroundWorker();
+        worker.DoWork += delegate(object s, System.ComponentModel.DoWorkEventArgs ev)
         {
-            int pensioners = Db.ScalarInt("SELECT Count(*) FROM tblPensioners");
-            int vouchers = Db.ScalarInt("SELECT Count(*) FROM tblVoucherIssues");
-            int sanatoriums = Db.ScalarInt("SELECT Count(*) FROM tblSanatoriums");
-            stats.Text = pensioners + " пенсионеров  ·  " + vouchers + " путевок  ·  " + sanatoriums + " санаториев";
-        });
+            int[] counts = new int[3];
+            counts[0] = Db.ScalarInt("SELECT Count(*) FROM tblPensioners");
+            counts[1] = Db.ScalarInt("SELECT Count(*) FROM tblVoucherIssues");
+            counts[2] = Db.ScalarInt("SELECT Count(*) FROM tblSanatoriums");
+            ev.Result = counts;
+        };
+        worker.RunWorkerCompleted += delegate(object s, System.ComponentModel.RunWorkerCompletedEventArgs ev)
+        {
+            if (ev.Error != null) { ErrorLogger.LogException(ev.Error); stats.Text = ""; return; }
+            int[] counts = ev.Result as int[];
+            if (counts != null && !IsDisposed)
+                stats.Text = counts[0] + " пенсионеров  ·  " + counts[1] + " путевок  ·  " + counts[2] + " санаториев";
+        };
+        worker.RunWorkerAsync();
     }
 
     private void ShowEmbeddedForm(Form form)
@@ -1386,7 +1295,6 @@ internal sealed class MainForm : GlassForm
 
         homeLayout.Visible = false;
         contentPanel.Controls.Add(form);
-        UiPerformance.Optimize(form);
         form.BringToFront();
         form.Show();
     }
@@ -1465,12 +1373,15 @@ internal sealed class MainForm : GlassForm
         private readonly ComboBox region;
         private readonly CheckBox onlyWithVouchers;
         private readonly DataGridView grid;
+        private readonly Label statusLabel;
+        private bool _loading;
 
         public PensionersForm(DbContext db) : base(db)
         {
             Text = "Пенсионеры";
             Size = new Size(1100, 700);
             MinimumSize = new Size(820, 520);
+            KeyPreview = true;
 
             GlassPanel panel = new GlassPanel();
             panel.Dock = DockStyle.Fill;
@@ -1479,7 +1390,6 @@ internal sealed class MainForm : GlassForm
             TableLayoutPanel root = MakeRootLayout();
             panel.Controls.Add(root);
 
-            // Header
             TableLayoutPanel header = MakeHeaderRow();
             root.Controls.Add(header, 0, 0);
             header.Controls.Add(Theme.Label("Пенсионеры", Theme.TitleFont, Theme.Ink), 0, 0);
@@ -1487,10 +1397,8 @@ internal sealed class MainForm : GlassForm
             header.Controls.Add(hBtns, 1, 0);
             Button exportPdf = MakeButton("Экспорт PDF", false); exportPdf.Click += delegate { ExportPdf(); };
             Button load = MakeButton("Обновить", true); load.Click += delegate { LoadGrid(); };
-            hBtns.Controls.Add(exportPdf);
-            hBtns.Controls.Add(load);
+            hBtns.Controls.Add(exportPdf); hBtns.Controls.Add(load);
 
-            // Filters
             FlowLayoutPanel filters = MakeFilterRow();
             root.Controls.Add(filters, 0, 1);
             search = Theme.TextBox("Поиск по ФИО и удостоверению");
@@ -1501,11 +1409,8 @@ internal sealed class MainForm : GlassForm
             onlyWithVouchers.AutoSize = true;
             onlyWithVouchers.BackColor = Color.Transparent;
             onlyWithVouchers.Margin = new Padding(4, 6, 0, 4);
-            filters.Controls.Add(search);
-            filters.Controls.Add(region);
-            filters.Controls.Add(onlyWithVouchers);
+            filters.Controls.Add(search); filters.Controls.Add(region); filters.Controls.Add(onlyWithVouchers);
 
-            // Grid
             grid = new DataGridView();
             grid.Margin = new Padding(0, 0, 0, 10);
             Theme.StyleGrid(grid);
@@ -1513,10 +1418,9 @@ internal sealed class MainForm : GlassForm
             {
                 if (ev.RowIndex >= 0) EditPensioner(s, EventArgs.Empty);
             };
-            new ToolTip().SetToolTip(grid, "Двойной клик — редактировать запись");
+            new ToolTip().SetToolTip(grid, "Двойной клик — редактировать  |  F5 — обновить  |  Ins — добавить  |  Del — удалить");
             root.Controls.Add(grid, 0, 2);
 
-            // Actions
             TableLayoutPanel actions = MakeActionBar();
             root.Controls.Add(actions, 0, 3);
             FlowLayoutPanel left = MakeLeftActions();
@@ -1525,6 +1429,9 @@ internal sealed class MainForm : GlassForm
             Button editBtn = MakeButton("Изменить", false); editBtn.Margin = new Padding(0, 0, 8, 0); editBtn.Click += EditPensioner;
             Button del = MakeButton("Удалить", false); del.Click += DeletePensioner;
             left.Controls.Add(add); left.Controls.Add(editBtn); left.Controls.Add(del);
+            statusLabel = Theme.Label("", Theme.BaseFont, Theme.Muted);
+            statusLabel.Margin = new Padding(12, 8, 0, 0);
+            left.Controls.Add(statusLabel);
             Button close = MakeButton("Назад", false); close.Click += delegate { Close(); };
             FlowLayoutPanel right = MakeRightActions();
             right.Controls.Add(close);
@@ -1540,45 +1447,68 @@ internal sealed class MainForm : GlassForm
             };
             search.TextChanged += delegate { Debouncer.Debounce("pensioners_search", LoadGrid, 350); };
             region.SelectedIndexChanged += delegate { Debouncer.Debounce("pensioners_region", LoadGrid, 200); };
-            onlyWithVouchers.CheckedChanged += delegate { LoadGrid(); };
+            onlyWithVouchers.CheckedChanged += delegate { Debouncer.Debounce("pensioners_vouchers", LoadGrid, 150); };
+            search.KeyDown += delegate(object s, KeyEventArgs ke) {
+                if (ke.KeyCode == Keys.Enter) { ke.SuppressKeyPress = true; LoadGrid(); }
+            };
+            KeyDown += delegate(object s, KeyEventArgs ke) {
+                if (ke.KeyCode == Keys.F5) { LoadGrid(); ke.Handled = true; }
+                else if (ke.KeyCode == Keys.Delete && grid.Focused && grid.SelectedRows.Count > 0) { DeletePensioner(s, EventArgs.Empty); ke.Handled = true; }
+                else if (ke.KeyCode == Keys.Insert) { AddPensioner(s, EventArgs.Empty); ke.Handled = true; }
+            };
         }
 
         private void LoadGrid()
         {
-            Guard(delegate
+            if (_loading || !Db.Exists()) return;
+            _loading = true;
+            statusLabel.Text = "Загрузка...";
+            grid.Enabled = false;
+
+            List<string> where = new List<string>();
+            List<OleDbParameter> parameters = new List<OleDbParameter>();
+            string text = search.Text.Trim();
+            if (text.Length > 0)
             {
-                List<string> where = new List<string>();
-                List<OleDbParameter> parameters = new List<OleDbParameter>();
-                string text = search.Text.Trim();
-                if (text.Length > 0)
-                {
-                    where.Add("(p.LastName LIKE ? OR p.FirstName LIKE ? OR p.MiddleName LIKE ? OR p.PensionCertificateNo LIKE ?)");
-                    string value = "%" + text + "%";
-                    parameters.Add(new OleDbParameter("p1", value));
-                    parameters.Add(new OleDbParameter("p2", value));
-                    parameters.Add(new OleDbParameter("p3", value));
-                    parameters.Add(new OleDbParameter("p4", value));
-                }
-                LookupItem selectedRegion = region.SelectedItem as LookupItem;
-                if (selectedRegion != null && selectedRegion.Id > 0)
-                {
-                    where.Add("p.RegionID = ?");
-                    parameters.Add(new OleDbParameter("region", selectedRegion.Id));
-                }
-                if (onlyWithVouchers.Checked)
-                {
-                    where.Add("EXISTS (SELECT 1 FROM tblVoucherIssues AS vi WHERE vi.PensionerID = p.PensionerID)");
-                }
-                string sql =
-                    "SELECT p.PensionerID AS [Код], p.LastName AS [Фамилия], p.FirstName AS [Имя], p.MiddleName AS [Отчество], " +
-                    "r.RegionName AS [Регион], c.CategoryName AS [Категория], p.BirthDate AS [Дата рождения], " +
-                    "p.PensionCertificateNo AS [Удостоверение], p.Phone AS [Телефон] " +
-                    "FROM (tblPensioners AS p INNER JOIN tblRegions AS r ON p.RegionID = r.RegionID) " +
-                    "INNER JOIN tblPensionerCategories AS c ON p.CategoryID = c.CategoryID ";
-                if (where.Count > 0) sql += "WHERE " + string.Join(" AND ", where.ToArray()) + " ";
-                sql += "ORDER BY p.LastName, p.FirstName";
-                UiPerformance.BindGrid(grid, Db.Query(sql, parameters.ToArray()));
-            });
+                where.Add("(p.LastName LIKE ? OR p.FirstName LIKE ? OR p.MiddleName LIKE ? OR p.PensionCertificateNo LIKE ?)");
+                string value = "%" + text + "%";
+                parameters.Add(new OleDbParameter("p1", value));
+                parameters.Add(new OleDbParameter("p2", value));
+                parameters.Add(new OleDbParameter("p3", value));
+                parameters.Add(new OleDbParameter("p4", value));
+            }
+            LookupItem selectedRegion = region.SelectedItem as LookupItem;
+            if (selectedRegion != null && selectedRegion.Id > 0)
+            {
+                where.Add("p.RegionID = ?");
+                parameters.Add(new OleDbParameter("region", selectedRegion.Id));
+            }
+            if (onlyWithVouchers.Checked)
+                where.Add("EXISTS (SELECT 1 FROM tblVoucherIssues AS vi WHERE vi.PensionerID = p.PensionerID)");
+
+            string sql =
+                "SELECT p.PensionerID AS [Код], p.LastName AS [Фамилия], p.FirstName AS [Имя], p.MiddleName AS [Отчество], " +
+                "r.RegionName AS [Регион], c.CategoryName AS [Категория], p.BirthDate AS [Дата рождения], " +
+                "p.PensionCertificateNo AS [Удостоверение], p.Phone AS [Телефон] " +
+                "FROM (tblPensioners AS p INNER JOIN tblRegions AS r ON p.RegionID = r.RegionID) " +
+                "INNER JOIN tblPensionerCategories AS c ON p.CategoryID = c.CategoryID ";
+            if (where.Count > 0) sql += "WHERE " + string.Join(" AND ", where.ToArray()) + " ";
+            sql += "ORDER BY p.LastName, p.FirstName";
+            OleDbParameter[] pArr = parameters.ToArray();
+            string sqlFinal = sql;
+
+            System.ComponentModel.BackgroundWorker worker = new System.ComponentModel.BackgroundWorker();
+            worker.DoWork += delegate(object s, System.ComponentModel.DoWorkEventArgs ev) { ev.Result = Db.Query(sqlFinal, pArr); };
+            worker.RunWorkerCompleted += delegate(object s, System.ComponentModel.RunWorkerCompletedEventArgs ev)
+            {
+                _loading = false;
+                grid.Enabled = true;
+                if (ev.Error != null) { ErrorLogger.LogException(ev.Error); statusLabel.Text = "Ошибка"; return; }
+                DataTable table = (DataTable)ev.Result;
+                UiPerformance.BindGrid(grid, table);
+                statusLabel.Text = "Записей: " + table.Rows.Count;
+            };
+            worker.RunWorkerAsync();
         }
 
         private void ExportPdf()
@@ -1652,12 +1582,15 @@ internal sealed class MainForm : GlassForm
         private readonly ComboBox status;
         private readonly CheckBox hideCanceled;
         private readonly DataGridView grid;
+        private readonly Label statusLabel;
+        private bool _loading;
 
         public VouchersForm(DbContext db) : base(db)
         {
             Text = "Журнал путевок";
             Size = new Size(1140, 700);
             MinimumSize = new Size(860, 520);
+            KeyPreview = true;
 
             GlassPanel panel = new GlassPanel();
             panel.Dock = DockStyle.Fill;
@@ -1666,7 +1599,6 @@ internal sealed class MainForm : GlassForm
             TableLayoutPanel root = MakeRootLayout();
             panel.Controls.Add(root);
 
-            // Header
             TableLayoutPanel header = MakeHeaderRow();
             root.Controls.Add(header, 0, 0);
             header.Controls.Add(Theme.Label("Журнал путевок", Theme.TitleFont, Theme.Ink), 0, 0);
@@ -1677,7 +1609,6 @@ internal sealed class MainForm : GlassForm
             Button load = MakeButton("Обновить", true); load.Click += delegate { LoadGrid(); };
             hBtns.Controls.Add(preview); hBtns.Controls.Add(print); hBtns.Controls.Add(load);
 
-            // Filters
             FlowLayoutPanel filters = MakeFilterRow();
             root.Controls.Add(filters, 0, 1);
             region = new ComboBox(); region.Width = 210; region.Margin = new Padding(0, 0, 10, 4);
@@ -1690,7 +1621,6 @@ internal sealed class MainForm : GlassForm
             hideCanceled.Margin = new Padding(4, 6, 0, 4);
             filters.Controls.Add(region); filters.Controls.Add(status); filters.Controls.Add(hideCanceled);
 
-            // Grid
             grid = new DataGridView();
             grid.Margin = new Padding(0, 0, 0, 10);
             Theme.StyleGrid(grid);
@@ -1698,10 +1628,9 @@ internal sealed class MainForm : GlassForm
             {
                 if (ev.RowIndex >= 0) EditVoucher(s, EventArgs.Empty);
             };
-            new ToolTip().SetToolTip(grid, "Двойной клик — редактировать запись");
+            new ToolTip().SetToolTip(grid, "Двойной клик — редактировать  |  F5 — обновить  |  Ins — добавить  |  Del — удалить");
             root.Controls.Add(grid, 0, 2);
 
-            // Actions
             TableLayoutPanel actions = MakeActionBar();
             root.Controls.Add(actions, 0, 3);
             FlowLayoutPanel left = MakeLeftActions();
@@ -1710,6 +1639,9 @@ internal sealed class MainForm : GlassForm
             Button editBtn = MakeButton("Изменить", false); editBtn.Margin = new Padding(0, 0, 8, 0); editBtn.Click += EditVoucher;
             Button del = MakeButton("Удалить", false); del.Click += DeleteVoucher;
             left.Controls.Add(add); left.Controls.Add(editBtn); left.Controls.Add(del);
+            statusLabel = Theme.Label("", Theme.BaseFont, Theme.Muted);
+            statusLabel.Margin = new Padding(12, 8, 0, 0);
+            left.Controls.Add(statusLabel);
             Button close = MakeButton("Назад", false); close.Click += delegate { Close(); };
             FlowLayoutPanel right = MakeRightActions();
             right.Controls.Add(close);
@@ -1726,46 +1658,66 @@ internal sealed class MainForm : GlassForm
             };
             region.SelectedIndexChanged += delegate { Debouncer.Debounce("vouchers_region", LoadGrid, 200); };
             status.SelectedIndexChanged += delegate { Debouncer.Debounce("vouchers_status", LoadGrid, 200); };
-            hideCanceled.CheckedChanged += delegate { LoadGrid(); };
+            hideCanceled.CheckedChanged += delegate { Debouncer.Debounce("vouchers_canceled", LoadGrid, 150); };
+            KeyDown += delegate(object s, KeyEventArgs ke) {
+                if (ke.KeyCode == Keys.F5) { LoadGrid(); ke.Handled = true; }
+                else if (ke.KeyCode == Keys.Delete && grid.Focused && grid.SelectedRows.Count > 0) { DeleteVoucher(s, EventArgs.Empty); ke.Handled = true; }
+                else if (ke.KeyCode == Keys.Insert) { AddVoucher(s, EventArgs.Empty); ke.Handled = true; }
+            };
         }
 
         private void LoadGrid()
         {
-            Guard(delegate
+            if (_loading || !Db.Exists()) return;
+            _loading = true;
+            statusLabel.Text = "Загрузка...";
+            grid.Enabled = false;
+
+            List<string> where = new List<string>();
+            List<OleDbParameter> parameters = new List<OleDbParameter>();
+            LookupItem selectedRegion = region.SelectedItem as LookupItem;
+            if (selectedRegion != null && selectedRegion.Id > 0)
             {
-                List<string> where = new List<string>();
-                List<OleDbParameter> parameters = new List<OleDbParameter>();
-                LookupItem selectedRegion = region.SelectedItem as LookupItem;
-                if (selectedRegion != null && selectedRegion.Id > 0)
-                {
-                    where.Add("p.RegionID = ?");
-                    parameters.Add(new OleDbParameter("region", selectedRegion.Id));
-                }
-                LookupItem selectedStatus = status.SelectedItem as LookupItem;
-                if (selectedStatus != null && selectedStatus.Id > 0)
-                {
-                    where.Add("vi.StatusID = ?");
-                    parameters.Add(new OleDbParameter("status", selectedStatus.Id));
-                }
-                if (hideCanceled.Checked)
-                {
-                    where.Add("vs.StatusName <> 'Отменена'");
-                }
-                string sql =
-                    "SELECT vi.IssueID, vi.VoucherNo AS [Путевка], vi.IssueDate AS [Регистрация], " +
-                    "p.LastName & ' ' & p.FirstName AS [Пенсионер], r.RegionName AS [Регион], " +
-                    "s.SanatoriumName AS [Санаторий], vi.StartDate AS [Заезд], vi.EndDate AS [Выезд], " +
-                    "DateDiff('d',[vi].[StartDate],[vi].[EndDate]) + 1 AS [Дней], " +
-                    "(DateDiff('d',[vi].[StartDate],[vi].[EndDate]) + 1) * [s].[PricePerDay] AS [Стоимость], " +
-                    "vs.StatusName AS [Статус] " +
-                    "FROM (((tblVoucherIssues AS vi INNER JOIN tblPensioners AS p ON vi.PensionerID = p.PensionerID) " +
-                    "INNER JOIN tblRegions AS r ON p.RegionID = r.RegionID) " +
-                    "INNER JOIN tblSanatoriums AS s ON vi.SanatoriumID = s.SanatoriumID) " +
-                    "INNER JOIN tblVoucherStatuses AS vs ON vi.StatusID = vs.StatusID ";
-                if (where.Count > 0) sql += "WHERE " + string.Join(" AND ", where.ToArray()) + " ";
-                sql += "ORDER BY vi.IssueDate DESC, vi.VoucherNo";
-                UiPerformance.BindGrid(grid, Db.Query(sql, parameters.ToArray()));
-            });
+                where.Add("p.RegionID = ?");
+                parameters.Add(new OleDbParameter("region", selectedRegion.Id));
+            }
+            LookupItem selectedStatus = status.SelectedItem as LookupItem;
+            if (selectedStatus != null && selectedStatus.Id > 0)
+            {
+                where.Add("vi.StatusID = ?");
+                parameters.Add(new OleDbParameter("status", selectedStatus.Id));
+            }
+            if (hideCanceled.Checked)
+                where.Add("vs.StatusName <> 'Отменена'");
+
+            string sql =
+                "SELECT vi.IssueID, vi.VoucherNo AS [Путевка], vi.IssueDate AS [Регистрация], " +
+                "p.LastName & ' ' & p.FirstName AS [Пенсионер], r.RegionName AS [Регион], " +
+                "s.SanatoriumName AS [Санаторий], vi.StartDate AS [Заезд], vi.EndDate AS [Выезд], " +
+                "DateDiff('d',[vi].[StartDate],[vi].[EndDate]) + 1 AS [Дней], " +
+                "(DateDiff('d',[vi].[StartDate],[vi].[EndDate]) + 1) * [s].[PricePerDay] AS [Стоимость], " +
+                "vs.StatusName AS [Статус] " +
+                "FROM (((tblVoucherIssues AS vi INNER JOIN tblPensioners AS p ON vi.PensionerID = p.PensionerID) " +
+                "INNER JOIN tblRegions AS r ON p.RegionID = r.RegionID) " +
+                "INNER JOIN tblSanatoriums AS s ON vi.SanatoriumID = s.SanatoriumID) " +
+                "INNER JOIN tblVoucherStatuses AS vs ON vi.StatusID = vs.StatusID ";
+            if (where.Count > 0) sql += "WHERE " + string.Join(" AND ", where.ToArray()) + " ";
+            sql += "ORDER BY vi.IssueDate DESC, vi.VoucherNo";
+            OleDbParameter[] pArr = parameters.ToArray();
+            string sqlFinal = sql;
+
+            System.ComponentModel.BackgroundWorker worker = new System.ComponentModel.BackgroundWorker();
+            worker.DoWork += delegate(object s, System.ComponentModel.DoWorkEventArgs ev) { ev.Result = Db.Query(sqlFinal, pArr); };
+            worker.RunWorkerCompleted += delegate(object s, System.ComponentModel.RunWorkerCompletedEventArgs ev)
+            {
+                _loading = false;
+                grid.Enabled = true;
+                if (ev.Error != null) { ErrorLogger.LogException(ev.Error); statusLabel.Text = "Ошибка"; return; }
+                DataTable table = (DataTable)ev.Result;
+                UiPerformance.BindGrid(grid, table);
+                statusLabel.Text = "Записей: " + table.Rows.Count;
+            };
+            worker.RunWorkerAsync();
         }
 
         private void AddVoucher(object sender, EventArgs e)
@@ -1902,12 +1854,15 @@ internal sealed class MainForm : GlassForm
         private readonly ComboBox profile;
         private readonly CheckBox onlyActive;
         private readonly DataGridView grid;
+        private readonly Label statusLabel;
+        private bool _loading;
 
         public SanatoriumsForm(DbContext db) : base(db)
         {
             Text = "Санатории";
             Size = new Size(1060, 680);
             MinimumSize = new Size(780, 500);
+            KeyPreview = true;
 
             GlassPanel panel = new GlassPanel();
             panel.Dock = DockStyle.Fill;
@@ -1916,7 +1871,6 @@ internal sealed class MainForm : GlassForm
             TableLayoutPanel root = MakeRootLayout();
             panel.Controls.Add(root);
 
-            // Header
             TableLayoutPanel header = MakeHeaderRow();
             root.Controls.Add(header, 0, 0);
             header.Controls.Add(Theme.Label("Санатории", Theme.TitleFont, Theme.Ink), 0, 0);
@@ -1926,7 +1880,6 @@ internal sealed class MainForm : GlassForm
             Button load = MakeButton("Обновить", true); load.Margin = new Padding(8, 0, 0, 0); load.Click += delegate { LoadGrid(); };
             hBtns.Controls.Add(exportPdf); hBtns.Controls.Add(load);
 
-            // Filters
             FlowLayoutPanel filters = MakeFilterRow();
             root.Controls.Add(filters, 0, 1);
             profile = new ComboBox(); profile.Width = 240; profile.Margin = new Padding(0, 0, 10, 4);
@@ -1938,7 +1891,6 @@ internal sealed class MainForm : GlassForm
             onlyActive.Margin = new Padding(4, 6, 0, 4);
             filters.Controls.Add(profile); filters.Controls.Add(onlyActive);
 
-            // Grid
             grid = new DataGridView();
             grid.Margin = new Padding(0, 0, 0, 10);
             Theme.StyleGrid(grid);
@@ -1946,10 +1898,9 @@ internal sealed class MainForm : GlassForm
             {
                 if (ev.RowIndex >= 0) EditSanatorium(s, EventArgs.Empty);
             };
-            new ToolTip().SetToolTip(grid, "Двойной клик — редактировать запись");
+            new ToolTip().SetToolTip(grid, "Двойной клик — редактировать  |  F5 — обновить  |  Ins — добавить  |  Del — удалить");
             root.Controls.Add(grid, 0, 2);
 
-            // Actions
             TableLayoutPanel actions = MakeActionBar();
             root.Controls.Add(actions, 0, 3);
             FlowLayoutPanel left = MakeLeftActions();
@@ -1958,6 +1909,9 @@ internal sealed class MainForm : GlassForm
             Button editBtn = MakeButton("Изменить", false); editBtn.Margin = new Padding(0, 0, 8, 0); editBtn.Click += EditSanatorium;
             Button del = MakeButton("Удалить", false); del.Click += DeleteSanatorium;
             left.Controls.Add(add); left.Controls.Add(editBtn); left.Controls.Add(del);
+            statusLabel = Theme.Label("", Theme.BaseFont, Theme.Muted);
+            statusLabel.Margin = new Padding(12, 8, 0, 0);
+            left.Controls.Add(statusLabel);
             Button close = MakeButton("Назад", false); close.Click += delegate { Close(); };
             FlowLayoutPanel right = MakeRightActions();
             right.Controls.Add(close);
@@ -1972,34 +1926,54 @@ internal sealed class MainForm : GlassForm
                 });
             };
             profile.SelectedIndexChanged += delegate { Debouncer.Debounce("sanatoriums_profile", LoadGrid, 200); };
-            onlyActive.CheckedChanged += delegate { LoadGrid(); };
+            onlyActive.CheckedChanged += delegate { Debouncer.Debounce("sanatoriums_active", LoadGrid, 150); };
+            KeyDown += delegate(object s, KeyEventArgs ke) {
+                if (ke.KeyCode == Keys.F5) { LoadGrid(); ke.Handled = true; }
+                else if (ke.KeyCode == Keys.Delete && grid.Focused && grid.SelectedRows.Count > 0) { DeleteSanatorium(s, EventArgs.Empty); ke.Handled = true; }
+                else if (ke.KeyCode == Keys.Insert) { AddSanatorium(s, EventArgs.Empty); ke.Handled = true; }
+            };
         }
 
         private void LoadGrid()
         {
-            Guard(delegate
+            if (_loading || !Db.Exists()) return;
+            _loading = true;
+            statusLabel.Text = "Загрузка...";
+            grid.Enabled = false;
+
+            List<string> where = new List<string>();
+            List<OleDbParameter> parameters = new List<OleDbParameter>();
+            LookupItem selectedProfile = profile.SelectedItem as LookupItem;
+            if (selectedProfile != null && selectedProfile.Id > 0)
             {
-                List<string> where = new List<string>();
-                List<OleDbParameter> parameters = new List<OleDbParameter>();
-                LookupItem selectedProfile = profile.SelectedItem as LookupItem;
-                if (selectedProfile != null && selectedProfile.Id > 0)
-                {
-                    where.Add("s.ProfileID = ?");
-                    parameters.Add(new OleDbParameter("profile", selectedProfile.Id));
-                }
-                if (onlyActive.Checked)
-                {
-                    where.Add("s.IsActive = True");
-                }
-                string sql =
-                    "SELECT s.SanatoriumID, s.SanatoriumName AS [Санаторий], r.RegionName AS [Регион], mp.ProfileName AS [Профиль], " +
-                    "s.CapacityBeds AS [Коек], s.PricePerDay AS [Цена дня], s.Phone AS [Телефон], s.Address AS [Адрес] " +
-                    "FROM (tblSanatoriums AS s INNER JOIN tblRegions AS r ON s.RegionID = r.RegionID) " +
-                    "INNER JOIN tblMedicalProfiles AS mp ON s.ProfileID = mp.ProfileID ";
-                if (where.Count > 0) sql += "WHERE " + string.Join(" AND ", where.ToArray()) + " ";
-                sql += "ORDER BY s.SanatoriumName";
-                UiPerformance.BindGrid(grid, Db.Query(sql, parameters.ToArray()));
-            });
+                where.Add("s.ProfileID = ?");
+                parameters.Add(new OleDbParameter("profile", selectedProfile.Id));
+            }
+            if (onlyActive.Checked)
+                where.Add("s.IsActive = True");
+
+            string sql =
+                "SELECT s.SanatoriumID, s.SanatoriumName AS [Санаторий], r.RegionName AS [Регион], mp.ProfileName AS [Профиль], " +
+                "s.CapacityBeds AS [Коек], s.PricePerDay AS [Цена дня], s.Phone AS [Телефон], s.Address AS [Адрес] " +
+                "FROM (tblSanatoriums AS s INNER JOIN tblRegions AS r ON s.RegionID = r.RegionID) " +
+                "INNER JOIN tblMedicalProfiles AS mp ON s.ProfileID = mp.ProfileID ";
+            if (where.Count > 0) sql += "WHERE " + string.Join(" AND ", where.ToArray()) + " ";
+            sql += "ORDER BY s.SanatoriumName";
+            OleDbParameter[] pArr = parameters.ToArray();
+            string sqlFinal = sql;
+
+            System.ComponentModel.BackgroundWorker worker = new System.ComponentModel.BackgroundWorker();
+            worker.DoWork += delegate(object s, System.ComponentModel.DoWorkEventArgs ev) { ev.Result = Db.Query(sqlFinal, pArr); };
+            worker.RunWorkerCompleted += delegate(object s, System.ComponentModel.RunWorkerCompletedEventArgs ev)
+            {
+                _loading = false;
+                grid.Enabled = true;
+                if (ev.Error != null) { ErrorLogger.LogException(ev.Error); statusLabel.Text = "Ошибка"; return; }
+                DataTable table = (DataTable)ev.Result;
+                UiPerformance.BindGrid(grid, table);
+                statusLabel.Text = "Записей: " + table.Rows.Count;
+            };
+            worker.RunWorkerAsync();
         }
 
         private void ExportPdf()
@@ -2614,19 +2588,198 @@ internal abstract class RecordFormBase : GlassForm
     }
 
     
+// ── Chart helpers ────────────────────────────────────────────────────────
+
+    internal struct PieSlice { public string Label; public int Value; }
+    internal struct BarEntry { public string Label; public int Value; public int Total; public Color Color; }
+
+    internal sealed class PieChartControl : Panel
+    {
+        private static readonly Color[] Palette = {
+            Color.FromArgb(59, 130, 246), Color.FromArgb(34, 197, 94),
+            Color.FromArgb(251, 146, 60), Color.FromArgb(239, 68, 68),
+            Color.FromArgb(168, 85, 247),
+        };
+        private PieSlice[] _slices;
+        private string _title = "";
+
+        public PieChartControl()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+        }
+
+        public void SetData(string title, PieSlice[] slices) { _title = title; _slices = slices; Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            Color bg = Theme.Dark ? Color.FromArgb(24, 34, 54) : Color.White;
+            Color border = Theme.Dark ? Color.FromArgb(44, 60, 90) : Color.FromArgb(205, 218, 240);
+            using (SolidBrush b = new SolidBrush(bg)) g.FillRectangle(b, ClientRectangle);
+            using (Pen p = new Pen(border)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+
+            using (Font tf = new Font("Segoe UI Semibold", 10f, FontStyle.Bold))
+            using (SolidBrush b = new SolidBrush(Theme.Ink))
+                g.DrawString(_title, tf, b, 14, 12);
+
+            if (_slices == null || _slices.Length == 0)
+            {
+                using (SolidBrush b = new SolidBrush(Theme.Muted))
+                    g.DrawString("Нет данных", Theme.BaseFont, b, 14, 38);
+                return;
+            }
+
+            int total = 0;
+            foreach (PieSlice s in _slices) total += s.Value;
+            if (total == 0) return;
+
+            int legendW = 170;
+            int chartLeft = 14; int chartTop = 38;
+            int chartAreaW = Width - legendW - chartLeft - 10;
+            int chartAreaH = Height - chartTop - 10;
+            int r = Math.Min(chartAreaW, chartAreaH) / 2 - 6;
+            if (r < 12) return;
+            int cx = chartLeft + chartAreaW / 2;
+            int cy = chartTop + chartAreaH / 2;
+            int innerR = r * 56 / 100;
+
+            float angle = -90f;
+            for (int i = 0; i < _slices.Length; i++)
+            {
+                float sweep = 360f * _slices[i].Value / total;
+                using (SolidBrush b = new SolidBrush(Palette[i % Palette.Length]))
+                    g.FillPie(b, cx - r, cy - r, r * 2, r * 2, angle, sweep);
+                angle += sweep;
+            }
+            using (SolidBrush b = new SolidBrush(bg))
+                g.FillEllipse(b, cx - innerR, cy - innerR, innerR * 2, innerR * 2);
+
+            using (Font f = new Font("Segoe UI Semibold", 15f, FontStyle.Bold))
+            using (SolidBrush b = new SolidBrush(Theme.Ink))
+            {
+                string txt = total.ToString();
+                SizeF sz = g.MeasureString(txt, f);
+                g.DrawString(txt, f, b, cx - sz.Width / 2, cy - sz.Height / 2);
+            }
+
+            int lx = Width - legendW + 6;
+            int ly = chartTop + 4;
+            using (Font f = new Font("Segoe UI", 8.5f))
+            {
+                for (int i = 0; i < _slices.Length && i < Palette.Length; i++)
+                {
+                    Color c = Palette[i % Palette.Length];
+                    using (SolidBrush b = new SolidBrush(c))
+                        g.FillRectangle(b, lx, ly + i * 28 + 6, 11, 11);
+                    int pct = _slices[i].Value * 100 / total;
+                    using (SolidBrush b = new SolidBrush(Theme.Ink))
+                        g.DrawString(_slices[i].Label + ": " + _slices[i].Value + " (" + pct + "%)", f, b, lx + 16, ly + i * 28);
+                }
+            }
+        }
+    }
+
+    internal sealed class BarChartControl : Panel
+    {
+        private BarEntry[] _items;
+        private string _title = "";
+
+        public BarChartControl()
+        {
+            DoubleBuffered = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+        }
+
+        public void SetData(string title, BarEntry[] items) { _title = title; _items = items; Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            Color bg = Theme.Dark ? Color.FromArgb(24, 34, 54) : Color.White;
+            Color border = Theme.Dark ? Color.FromArgb(44, 60, 90) : Color.FromArgb(205, 218, 240);
+            using (SolidBrush b = new SolidBrush(bg)) g.FillRectangle(b, ClientRectangle);
+            using (Pen p = new Pen(border)) g.DrawRectangle(p, 0, 0, Width - 1, Height - 1);
+
+            using (Font tf = new Font("Segoe UI Semibold", 10f, FontStyle.Bold))
+            using (SolidBrush b = new SolidBrush(Theme.Ink))
+                g.DrawString(_title, tf, b, 14, 12);
+
+            if (_items == null || _items.Length == 0)
+            {
+                using (SolidBrush b = new SolidBrush(Theme.Muted))
+                    g.DrawString("Нет данных", Theme.BaseFont, b, 14, 38);
+                return;
+            }
+
+            int lblW = 155; int valW = 72;
+            int barLeft = lblW + 14;
+            int barRight = Width - valW - 10;
+            int barW = barRight - barLeft;
+            if (barW < 10) return;
+
+            int bH = 24; int gap = 16; int top = 40;
+
+            for (int i = 0; i < _items.Length; i++)
+            {
+                int y = top + i * (bH + gap);
+                BarEntry item = _items[i];
+
+                using (Font f = new Font("Segoe UI", 9f))
+                using (SolidBrush b = new SolidBrush(Theme.Ink))
+                    g.DrawString(item.Label, f, b, 14, y + 3);
+
+                Color track = Theme.Dark ? Color.FromArgb(38, 52, 80) : Color.FromArgb(228, 234, 248);
+                using (SolidBrush b = new SolidBrush(track))
+                    g.FillRectangle(b, barLeft, y, barW, bH);
+
+                if (item.Total > 0 && item.Value > 0)
+                {
+                    int fw = Math.Max(4, barW * item.Value / item.Total);
+                    using (SolidBrush b = new SolidBrush(item.Color))
+                        g.FillRectangle(b, barLeft, y, fw, bH);
+                }
+
+                int pct = item.Total > 0 ? item.Value * 100 / item.Total : 0;
+                using (Font f = new Font("Segoe UI Semibold", 9f, FontStyle.Bold))
+                using (SolidBrush b = new SolidBrush(Theme.Ink))
+                    g.DrawString(item.Value + " / " + item.Total, f, b, barRight + 6, y + 1);
+                using (Font f = new Font("Segoe UI", 8f))
+                using (SolidBrush b = new SolidBrush(Theme.Muted))
+                    g.DrawString(pct + "%", f, b, barRight + 6, y + 13);
+            }
+        }
+    }
+
+// ── DataToolsForm ────────────────────────────────────────────────────────
+
 internal sealed class DataToolsForm : GlassForm
 {
-    private readonly Label stats;
+    private Label _vPensioners, _sPensioners;
+    private Label _vVouchers,   _sVouchers;
+    private Label _vSanatoriums, _sSanatoriums;
+    private Label _vCost,        _sCost;
+    private Label _vDays,        _sDays;
+    private PieChartControl _pieChart;
+    private BarChartControl _barChart;
+    private FlowLayoutPanel _cardsFlow;
+    private bool _statsLoading;
 
     public DataToolsForm(DbContext db) : base(db)
     {
         Text = "Сервис данных";
-        Size = new Size(980, 640);
-        MinimumSize = new Size(920, 620);
+        Size = new Size(1060, 720);
+        MinimumSize = new Size(980, 680);
 
         GlassPanel panel = new GlassPanel();
         panel.Dock = DockStyle.Fill;
-        panel.Padding = new Padding(24);
+        panel.Padding = new Padding(22);
         panel.AutoScroll = true;
         Controls.Add(panel);
 
@@ -2634,11 +2787,12 @@ internal sealed class DataToolsForm : GlassForm
         layout.Dock = DockStyle.Fill;
         layout.BackColor = Color.Transparent;
         layout.ColumnCount = 1;
-        layout.RowCount = 5;
+        layout.RowCount = 6;
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 240f));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         panel.Controls.Add(layout);
@@ -2649,12 +2803,43 @@ internal sealed class DataToolsForm : GlassForm
 
         Label hint = Theme.Label("Очистка не удаляет файл базы, формы, отчеты и связи. Перед полной очисткой требуется подтверждение.", Theme.BaseFont, Theme.Muted);
         hint.Margin = new Padding(0, 0, 0, 14);
-        hint.MaximumSize = new Size(840, 0);
+        hint.MaximumSize = new Size(980, 0);
         layout.Controls.Add(hint, 0, 1);
 
-        stats = Theme.Label("", Theme.H2Font, Theme.Blue);
-        stats.Margin = new Padding(0, 0, 0, 10);
-        layout.Controls.Add(stats, 0, 2);
+        _cardsFlow = new FlowLayoutPanel();
+        _cardsFlow.AutoSize = true;
+        _cardsFlow.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        _cardsFlow.FlowDirection = FlowDirection.LeftToRight;
+        _cardsFlow.WrapContents = false;
+        _cardsFlow.BackColor = Color.Transparent;
+        _cardsFlow.Margin = new Padding(0, 0, 0, 14);
+        layout.Controls.Add(_cardsFlow, 0, 2);
+
+        _vPensioners  = MkCard("Пенсионеры",    out _sPensioners);
+        _vVouchers    = MkCard("Путёвок выдано", out _sVouchers);
+        _vSanatoriums = MkCard("Санатории",      out _sSanatoriums);
+        _vCost        = MkCard("Стоимость",      out _sCost);
+        _vDays        = MkCard("Средний срок",   out _sDays);
+
+        TableLayoutPanel chartsRow = new TableLayoutPanel();
+        chartsRow.Dock = DockStyle.Fill;
+        chartsRow.ColumnCount = 2;
+        chartsRow.RowCount = 1;
+        chartsRow.BackColor = Color.Transparent;
+        chartsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+        chartsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+        chartsRow.Margin = new Padding(0, 0, 0, 14);
+        layout.Controls.Add(chartsRow, 0, 3);
+
+        _pieChart = new PieChartControl();
+        _pieChart.Dock = DockStyle.Fill;
+        _pieChart.Margin = new Padding(0, 0, 8, 0);
+        chartsRow.Controls.Add(_pieChart, 0, 0);
+
+        _barChart = new BarChartControl();
+        _barChart.Dock = DockStyle.Fill;
+        _barChart.Margin = new Padding(8, 0, 0, 0);
+        chartsRow.Controls.Add(_barChart, 1, 0);
 
         FlowLayoutPanel actions = new FlowLayoutPanel();
         actions.Dock = DockStyle.Fill;
@@ -2663,7 +2848,7 @@ internal sealed class DataToolsForm : GlassForm
         actions.FlowDirection = FlowDirection.LeftToRight;
         actions.WrapContents = true;
         actions.Padding = new Padding(0, 8, 0, 8);
-        layout.Controls.Add(actions, 0, 3);
+        layout.Controls.Add(actions, 0, 4);
 
         AddAction(actions, "Очистить журнал путевок", ClearJournal);
         AddAction(actions, "Очистить пенсионеров и журнал", ClearPensioners);
@@ -2677,7 +2862,7 @@ internal sealed class DataToolsForm : GlassForm
         footer.FlowDirection = FlowDirection.RightToLeft;
         footer.WrapContents = false;
         footer.Padding = new Padding(0, 12, 0, 0);
-        layout.Controls.Add(footer, 0, 4);
+        layout.Controls.Add(footer, 0, 5);
 
         Button close = MakeButton("Назад", false);
         close.Click += delegate { Close(); };
@@ -2686,26 +2871,128 @@ internal sealed class DataToolsForm : GlassForm
         Load += delegate { RefreshStats(); };
     }
 
+    private Label MkCard(string title, out Label sub)
+    {
+        Panel card = new Panel();
+        card.Width = 178; card.Height = 88;
+        card.Margin = new Padding(0, 0, 10, 0);
+        card.BackColor = Color.Transparent;
+        card.Paint += delegate(object s, PaintEventArgs e)
+        {
+            Color bg = Theme.Dark ? Color.FromArgb(30, 42, 65) : Color.FromArgb(246, 249, 255);
+            Color bc = Theme.Dark ? Color.FromArgb(44, 60, 90)  : Color.FromArgb(205, 218, 240);
+            using (SolidBrush b = new SolidBrush(bg)) e.Graphics.FillRectangle(b, 0, 0, card.Width, card.Height);
+            using (Pen p = new Pen(bc)) e.Graphics.DrawRectangle(p, 0, 0, card.Width - 1, card.Height - 1);
+        };
+        Label val = new Label();
+        val.Text = "..."; val.Font = Theme.H2Font; val.ForeColor = Theme.Blue;
+        val.AutoSize = true; val.Location = new Point(12, 8);
+        Label lbl = new Label();
+        lbl.Text = title; lbl.Font = Theme.BaseFont; lbl.ForeColor = Theme.Muted;
+        lbl.AutoSize = false; lbl.Size = new Size(154, 18); lbl.Location = new Point(12, 42);
+        Label s2 = new Label();
+        s2.Text = ""; s2.Font = new Font("Segoe UI", 8.5f); s2.ForeColor = Theme.Muted;
+        s2.AutoSize = false; s2.Size = new Size(154, 28); s2.Location = new Point(12, 60);
+        card.Controls.Add(val); card.Controls.Add(lbl); card.Controls.Add(s2);
+        _cardsFlow.Controls.Add(card);
+        sub = s2; return val;
+    }
+
     private void AddAction(Control parent, string text, EventHandler click)
     {
-        Button button = new GlassButton();
-        button.Text = text;
-        button.Size = new Size(240, 58);
-        button.Margin = new Padding(0, 0, 12, 12);
-        Theme.StyleButton(button, text.IndexOf("все", StringComparison.OrdinalIgnoreCase) >= 0);
-        button.Click += click;
-        parent.Controls.Add(button);
+        Button b = new GlassButton();
+        b.Text = text; b.Size = new Size(240, 52);
+        b.Margin = new Padding(0, 0, 12, 8);
+        Theme.StyleButton(b, text.IndexOf("все", StringComparison.OrdinalIgnoreCase) >= 0);
+        b.Click += click;
+        parent.Controls.Add(b);
     }
 
     private void RefreshStats()
     {
-        Guard(delegate
+        if (_statsLoading || !Db.Exists()) return;
+        _statsLoading = true;
+        foreach (Label l in new[] { _vPensioners, _vVouchers, _vSanatoriums, _vCost, _vDays })
+            if (l != null) { l.Text = "..."; l.ForeColor = Theme.Muted; }
+        foreach (Label l in new[] { _sPensioners, _sVouchers, _sSanatoriums, _sCost, _sDays })
+            if (l != null) l.Text = "";
+
+        System.ComponentModel.BackgroundWorker w = new System.ComponentModel.BackgroundWorker();
+        w.DoWork += delegate(object s, System.ComponentModel.DoWorkEventArgs ev)
         {
-            stats.Text =
-                Db.ScalarInt("SELECT Count(*) FROM tblPensioners") + " пенсионеров  ·  " +
-                Db.ScalarInt("SELECT Count(*) FROM tblVoucherIssues") + " путевок  ·  " +
-                Db.ScalarInt("SELECT Count(*) FROM tblSanatoriums") + " санаториев";
-        });
+            Dictionary<string, object> d = new Dictionary<string, object>();
+            d["pen"]    = Db.ScalarInt("SELECT Count(*) FROM tblPensioners");
+            d["vch"]    = Db.ScalarInt("SELECT Count(*) FROM tblVoucherIssues");
+            d["san"]    = Db.ScalarInt("SELECT Count(*) FROM tblSanatoriums");
+            d["sanAct"] = Db.ScalarInt("SELECT Count(*) FROM tblSanatoriums WHERE IsActive = True");
+            try { d["penWV"] = Db.ScalarInt("SELECT Count(*) FROM tblPensioners WHERE PensionerID IN (SELECT DISTINCT PensionerID FROM tblVoucherIssues)"); } catch { d["penWV"] = -1; }
+            try { d["vchY"]  = Db.ScalarInt("SELECT Count(*) FROM tblVoucherIssues WHERE Year(IssueDate) = Year(Date())"); } catch { d["vchY"] = -1; }
+
+            long cost = -1L;
+            try { DataTable ct = Db.Query("SELECT Sum(TotalCost) FROM qryReport_VoucherIssuesDetailed"); cost = (ct.Rows.Count > 0 && ct.Rows[0][0] != DBNull.Value) ? Convert.ToInt64(ct.Rows[0][0]) : 0L; } catch { }
+            if (cost < 0) { try { DataTable ct = Db.Query("SELECT Sum((DateDiff('d',vi.StartDate,vi.EndDate)+1)*s.PricePerDay) FROM tblVoucherIssues AS vi INNER JOIN tblSanatoriums AS s ON vi.SanatoriumID=s.SanatoriumID WHERE vi.StartDate IS NOT NULL AND vi.EndDate IS NOT NULL"); cost = (ct.Rows.Count > 0 && ct.Rows[0][0] != DBNull.Value) ? Convert.ToInt64(ct.Rows[0][0]) : 0L; } catch { cost = 0L; } }
+            d["cost"] = cost;
+
+            double avgD = -1.0;
+            try { DataTable dt = Db.Query("SELECT Avg(CDbl(DaysCount)) FROM qryReport_VoucherIssuesDetailed WHERE DaysCount > 0"); avgD = (dt.Rows.Count > 0 && dt.Rows[0][0] != DBNull.Value) ? Math.Round(Convert.ToDouble(dt.Rows[0][0]), 1) : 0.0; } catch { }
+            if (avgD < 0) { try { DataTable dt = Db.Query("SELECT Avg(DateDiff('d',StartDate,EndDate)+1) FROM tblVoucherIssues WHERE StartDate IS NOT NULL AND EndDate IS NOT NULL"); avgD = (dt.Rows.Count > 0 && dt.Rows[0][0] != DBNull.Value) ? Math.Round(Convert.ToDouble(dt.Rows[0][0]), 1) : 0.0; } catch { avgD = 0.0; } }
+            d["days"] = avgD;
+
+            try { d["statuses"] = Db.Query("SELECT vs.StatusName, Count(*) AS cnt FROM tblVoucherIssues AS vi INNER JOIN tblVoucherStatuses AS vs ON vi.StatusID=vs.StatusID GROUP BY vs.StatusName ORDER BY Count(*) DESC"); } catch { d["statuses"] = null; }
+            ev.Result = d;
+        };
+
+        w.RunWorkerCompleted += delegate(object s, System.ComponentModel.RunWorkerCompletedEventArgs ev)
+        {
+            _statsLoading = false;
+            if (IsDisposed) return;
+            if (ev.Error != null) { ErrorLogger.LogException(ev.Error); return; }
+
+            Dictionary<string, object> d = (Dictionary<string, object>)ev.Result;
+            int pen    = (int)d["pen"];   int vch  = (int)d["vch"];
+            int san    = (int)d["san"];   int sanA = (int)d["sanAct"];
+            int penWV  = (int)d["penWV"]; int vchY = (int)d["vchY"];
+            long cost  = (long)d["cost"]; double days = (double)d["days"];
+            DataTable st = d["statuses"] as DataTable;
+
+            _vPensioners.Text = pen.ToString();  _vPensioners.ForeColor = Theme.Blue;
+            _sPensioners.Text = penWV >= 0 ? "с путёвками: " + penWV : "";
+
+            _vVouchers.Text   = vch.ToString();  _vVouchers.ForeColor   = Theme.Blue;
+            _sVouchers.Text   = vchY >= 0 ? "в этом году: " + vchY : "";
+
+            _vSanatoriums.Text = san.ToString(); _vSanatoriums.ForeColor = Theme.Blue;
+            _sSanatoriums.Text = "активных: " + sanA;
+
+            if (cost > 0) { _vCost.Text = FmtRub(cost); _vCost.ForeColor = Theme.Green; _sCost.Text = vch > 0 ? "ср. " + FmtRub(cost / vch) : ""; }
+            else          { _vCost.Text = "—";           _vCost.ForeColor = Theme.Muted; _sCost.Text = "нет данных"; }
+
+            if (days > 0) { _vDays.Text = days.ToString("0.#") + " дн."; _vDays.ForeColor = Theme.Blue; _sDays.Text = "средний срок"; }
+            else          { _vDays.Text = "—"; _vDays.ForeColor = Theme.Muted; _sDays.Text = ""; }
+
+            if (st != null && st.Rows.Count > 0)
+            {
+                List<PieSlice> slices = new List<PieSlice>();
+                foreach (DataRow row in st.Rows)
+                    slices.Add(new PieSlice { Label = Convert.ToString(row[0]), Value = Convert.ToInt32(row[1]) });
+                _pieChart.SetData("Статусы путёвок", slices.ToArray());
+            }
+            else _pieChart.SetData("Статусы путёвок", null);
+
+            List<BarEntry> bars = new List<BarEntry>();
+            if (pen > 0) bars.Add(new BarEntry { Label = "С путёвками",    Value = penWV >= 0 ? penWV : 0, Total = pen, Color = Color.FromArgb(59, 130, 246) });
+            if (san > 0) bars.Add(new BarEntry { Label = "Активных сан.",  Value = sanA,                   Total = san, Color = Color.FromArgb(34, 197, 94)  });
+            if (vch > 0 && vchY >= 0) bars.Add(new BarEntry { Label = "Путёвок (год)", Value = vchY, Total = vch, Color = Color.FromArgb(168, 85, 247) });
+            _barChart.SetData("Охват и активность", bars.ToArray());
+        };
+        w.RunWorkerAsync();
+    }
+
+    private static string FmtRub(long v)
+    {
+        if (v >= 1000000) return (v / 1000000.0).ToString("0.#") + " млн ₽";
+        if (v >= 1000)    return (v / 1000.0).ToString("0") + " тыс ₽";
+        return v + " ₽";
     }
 
     private void ClearJournal(object sender, EventArgs e)
@@ -3567,6 +3854,121 @@ internal sealed class PrintOptionsForm : Form
         }
     }
 
+    internal sealed class SplashForm : Form
+    {
+        private readonly System.Windows.Forms.Timer _dotTimer;
+        private int _dotCount;
+        private string _statusText = "Инициализация...";
+
+        public SplashForm()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            Size = new Size(480, 220);
+            BackColor = Color.FromArgb(16, 22, 36);
+            DoubleBuffered = true;
+            ShowInTaskbar = false;
+            TopMost = true;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint, true);
+
+            _dotTimer = new System.Windows.Forms.Timer();
+            _dotTimer.Interval = 420;
+            _dotTimer.Tick += delegate { _dotCount = (_dotCount + 1) % 4; Invalidate(); };
+        }
+
+        public void SetStatus(string text)
+        {
+            _statusText = text;
+            if (IsHandleCreated) BeginInvoke((Action)(() => Invalidate()));
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            _dotTimer.Start();
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            _dotTimer.Stop();
+            _dotTimer.Dispose();
+            base.OnFormClosed(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            // Border
+            Rectangle border = new Rectangle(1, 1, Width - 3, Height - 3);
+            using (GraphicsPath bp = SplashRound(border, 16))
+            using (Pen borderPen = new Pen(Color.FromArgb(55, 85, 130), 1.5f))
+                g.DrawPath(borderPen, bp);
+
+            // Title
+            using (Font titleFont = new Font("Segoe UI", 19f, FontStyle.Bold, GraphicsUnit.Point))
+            using (SolidBrush titleBrush = new SolidBrush(Color.FromArgb(224, 234, 250)))
+            {
+                StringFormat sf = new StringFormat();
+                sf.Alignment = StringAlignment.Center;
+                sf.LineAlignment = StringAlignment.Center;
+                g.DrawString("Система здравоохранения", titleFont, titleBrush, new RectangleF(0, 36, Width, 40), sf);
+                sf.Dispose();
+            }
+
+            // Subtitle
+            using (Font subFont = new Font("Segoe UI", 10f, GraphicsUnit.Point))
+            using (SolidBrush subBrush = new SolidBrush(Color.FromArgb(100, 135, 175)))
+            {
+                StringFormat sf = new StringFormat();
+                sf.Alignment = StringAlignment.Center;
+                g.DrawString("Санаторные путевки · Пенсионеры · Отчёты", subFont, subBrush, new RectangleF(0, 84, Width, 22), sf);
+                sf.Dispose();
+            }
+
+            // Progress bar (animated dots)
+            int barW = 180;
+            int barH = 4;
+            int barX = (Width - barW) / 2;
+            int barY = 128;
+            using (SolidBrush trackBrush = new SolidBrush(Color.FromArgb(35, 52, 78)))
+                g.FillRectangle(trackBrush, barX, barY, barW, barH);
+
+            int fillW = (int)(barW * (_dotCount / 3.0));
+            if (_dotCount > 0)
+            {
+                using (LinearGradientBrush fillBrush = new LinearGradientBrush(
+                    new Rectangle(barX, barY, Math.Max(1, fillW), barH),
+                    Color.FromArgb(74, 144, 255), Color.FromArgb(100, 200, 255), LinearGradientMode.Horizontal))
+                    g.FillRectangle(fillBrush, barX, barY, fillW, barH);
+            }
+
+            // Status text
+            using (Font statusFont = new Font("Segoe UI", 9f, GraphicsUnit.Point))
+            using (SolidBrush statusBrush = new SolidBrush(Color.FromArgb(80, 110, 150)))
+            {
+                StringFormat sf = new StringFormat();
+                sf.Alignment = StringAlignment.Center;
+                g.DrawString(_statusText, statusFont, statusBrush, new RectangleF(0, 150, Width, 20), sf);
+                sf.Dispose();
+            }
+        }
+
+        private static GraphicsPath SplashRound(Rectangle r, int radius)
+        {
+            int d = radius * 2;
+            GraphicsPath p = new GraphicsPath();
+            p.AddArc(r.X, r.Y, d, d, 180, 90);
+            p.AddArc(r.Right - d, r.Y, d, d, 270, 90);
+            p.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+            p.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
+            p.CloseFigure();
+            return p;
+        }
+    }
+
     public static class PluginBootstrap
     {
         public static int RunSelfTest(string dbPath)
@@ -3630,6 +4032,11 @@ internal sealed class PrintOptionsForm : Form
         public static Form CreateMainForm(string dbPath)
         {
             return new MainForm(dbPath);
+        }
+
+        public static Form CreateSplash()
+        {
+            return new SplashForm();
         }
 
         private static DataTable BuildManualTable()
